@@ -36,7 +36,8 @@ const repeatSelect = $('#repeatSelect')
   setDefaultTime()
   await loadReminders()
   setupEventListeners()
-  setInterval(checkDueReminders, 30000)
+  checkDueReminders()            // 立即检查一次
+  setInterval(checkDueReminders, 15000)  // 每15秒轮询
   registerSW()
 })()
 
@@ -162,7 +163,8 @@ function escapeHtml(s) {
 
 // --- Check due reminders (desktop notification) ---
 async function checkDueReminders() {
-  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+  // 桌面通知
+  if ('Notification' in window && Notification.permission === 'granted') {
     const due = reminders.filter(r =>
       !r.done && !r.notified && new Date(r.remind_at) <= new Date()
     )
