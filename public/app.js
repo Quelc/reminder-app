@@ -181,38 +181,48 @@ function escapeHtml(s) {
   return d.innerHTML
 }
 
-// --- Check due reminders (desktop notification) ---
+// --- 发送通知（统一通过 Service Worker 发） ---
+async function sendNotification(title, body, tag) {
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      // 优先用 Service Worker 通知（即使页面打开也能弹）
+      const reg = await navigator.serviceWorker.ready
+      reg.showNotification(title, { body, icon: '/icons/icon-192.svg', tag, requireInteraction: true })
+      return true
+    }
+  } catch (e) {
+    console.warn('[通知] SW通知失败，尝试直接通知:', e)
+    try {
+      const n = new Notification(title, { body, icon: '/icons/icon-192.svg' })
+      n.onclick = () => window.focus()
+      return true
+    } catch (e2) {
+      console.error('[通知] 直接通知也失败:', e2)
+    }
+  }
+  return false
+}
+
+// --- Check due reminders ---
 async function checkDueReminders() {
   console.log('[提醒] 检查到期提醒...', reminders.length, '条待检')
 
-  // 检查到期提醒
   const due = reminders.filter(r =>
     !r.done && !r.notified && new Date(r.remind_at) <= new Date()
   )
   console.log('[提醒] 到期条数:', due.length)
 
-  if (due.length > 0 && 'Notification' in window && Notification.permission === 'granted') {
-    for (const r of due) {
-      console.log('[提醒] 弹出通知:', r.title)
-      try {
-        const notif = new Notification('⏰ 提醒', {
-          body: r.title,
-          icon: '/icons/icon-192.svg',
-          tag: r.id,
-        })
-        // 点击通知跳转到页面
-        notif.onclick = () => window.focus()
-      } catch (e) {
-        console.error('[提醒] 通知失败:', e)
-      }
-      const ok = await supabase(`reminders?id=eq.${r.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ notified: true }),
-      })
-      if (ok.ok) r.notified = true
-    }
-    render()
+  for (const r of due) {
+    console.log('[提醒] 发通知:', r.title)
+    await sendNotification('⏰ 提醒', r.title, r.id)
+    const ok = await supabase(`reminders?id=eq.${r.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ notified: true }),
+    })
+    if (ok.ok) r.notified = true
   }
+  if (due.length > 0) render()
+
   await handleRepeating()
 }
 
@@ -287,24 +297,17 @@ function setupEventListeners() {
   })
 
   // 测试通知按钮
-  $('#testNotifBtn').addEventListener('click', () => {
-    if ('Notification' in window) {
-      if (Notification.permission === 'granted') {
-        new Notification('🔔 测试通知', { body: '如果看到此消息，通知功能正常！', icon: '/icons/icon-192.svg' })
-        showToast('测试通知已发送')
-      } else if (Notification.permission === 'default') {
-        Notification.requestPermission().then(p => {
-          updateNotifStatus()
-          if (p === 'granted') {
-            new Notification('🔔 测试通知', { body: '通知已开启！', icon: '/icons/icon-192.svg' })
-          }
-        })
-      } else {
-        showToast('通知被拒绝，请在浏览器设置中开启')
-      }
-    } else {
-      showToast('此浏览器不支持通知')
+  $('#testNotifBtn').addEventListener('click', async () => {
+    if (!('Notification' in window)) { showToast('此浏览器不支持通知'); return }
+    if (Notification.permission === 'denied') { showToast('通知被拒绝，请在浏览器设置中开启'); return }
+    if (Notification.permission === 'default') {
+      const p = await Notification.requestPermission()
+      updateNotifStatus()
+      if (p !== 'granted') { showToast('需要允许通知才能提醒'); return }
     }
+    const ok = await sendNotification('🔔 测试通知', '如果看到此消息，通知功能正常！', 'test')
+    if (ok) showToast('测试通知已发送')
+    else showToast('通知发送失败，按F12看控制台日志')
   })
 
   // Click on list items (event delegation)
