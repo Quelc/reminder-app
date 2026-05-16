@@ -31,35 +31,21 @@ const titleInput = $('#titleInput')
 const timeInput = $('#timeInput')
 const repeatSelect = $('#repeatSelect')
 
+// 弹窗 refs
+const modal = $('#reminderModal')
+const modalTitle = $('#modalTitle')
+const modalBody = $('#modalBody')
+const modalConfirm = $('#modalConfirm')
+
 // --- Init ---
 ;(async function init() {
   setDefaultTime()
   await loadReminders()
   setupEventListeners()
-  updateNotifStatus()
   checkDueReminders()            // 立即检查一次
   setInterval(checkDueReminders, 15000)  // 每15秒轮询
   registerSW()
 })()
-
-function updateNotifStatus() {
-  const el = $('#notifStatus')
-  if (!('Notification' in window)) {
-    el.textContent = '此浏览器不支持通知'
-    return
-  }
-  switch (Notification.permission) {
-    case 'granted':
-      el.textContent = '✓ 通知已允许'
-      break
-    case 'denied':
-      el.textContent = '✗ 通知被拒绝，请在浏览器设置中开启'
-      break
-    case 'default':
-      el.textContent = '点击"测试通知"允许通知'
-      break
-  }
-}
 
 function setDefaultTime() {
   const d = new Date()
@@ -181,50 +167,70 @@ function escapeHtml(s) {
   return d.innerHTML
 }
 
-// --- 发送通知（统一通过 Service Worker 发） ---
-async function sendNotification(title, body, tag) {
+// --- 播放提示音 ---
+function playBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.frequency.value = 880
+    osc.type = 'sine'
+    gain.gain.setValueAtTime(0.3, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.8)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.8)
+  } catch (e) { /* 忽略音频错误 */ }
+}
+
+// --- 弹出提醒弹窗（手动关闭） ---
+function showReminderModal(title, body) {
+  modalTitle.textContent = title
+  modalBody.textContent = body
+  modal.classList.remove('hidden')
+  playBeep()
+  // 震动提醒（手机端）
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200])
+}
+
+// --- 后台也试着发通知（如能发则发） ---
+function tryNotify(title, body, tag) {
   try {
     if ('Notification' in window && Notification.permission === 'granted') {
-      // 优先用 Service Worker 通知（即使页面打开也能弹）
-      const reg = await navigator.serviceWorker.ready
-      reg.showNotification(title, { body, icon: '/icons/icon-192.svg', tag, requireInteraction: true })
-      return true
+      navigator.serviceWorker.ready.then(reg => {
+        reg.showNotification(title, { body, icon: '/icons/icon-192.svg', tag })
+      })
     }
-  } catch (e) {
-    console.warn('[通知] SW通知失败，尝试直接通知:', e)
-    try {
-      const n = new Notification(title, { body, icon: '/icons/icon-192.svg' })
-      n.onclick = () => window.focus()
-      return true
-    } catch (e2) {
-      console.error('[通知] 直接通知也失败:', e2)
-    }
-  }
-  return false
+  } catch (_) {}
 }
 
 // --- Check due reminders ---
 async function checkDueReminders() {
-  console.log('[提醒] 检查到期提醒...', reminders.length, '条待检')
-
   const due = reminders.filter(r =>
     !r.done && !r.notified && new Date(r.remind_at) <= new Date()
   )
-  console.log('[提醒] 到期条数:', due.length)
+  if (due.length === 0) { await handleRepeating(); return }
 
   for (const r of due) {
-    console.log('[提醒] 发通知:', r.title)
-    await sendNotification('⏰ 提醒', r.title, r.id)
+    console.log('[提醒] 到期:', r.title)
+    showReminderModal('⏰ 提醒', r.title)
+    tryNotify('⏰ 提醒', r.title, r.id)
+    // 标记已通知
     const ok = await supabase(`reminders?id=eq.${r.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ notified: true }),
     })
     if (ok.ok) r.notified = true
   }
-  if (due.length > 0) render()
-
+  render()
   await handleRepeating()
 }
+
+// 弹窗确认按钮
+modalConfirm.addEventListener('click', () => {
+  modal.classList.add('hidden')
+})
 
 async function handleRepeating() {
   for (const r of reminders) {
@@ -296,18 +302,9 @@ function setupEventListeners() {
     closeForm()
   })
 
-  // 测试通知按钮
-  $('#testNotifBtn').addEventListener('click', async () => {
-    if (!('Notification' in window)) { showToast('此浏览器不支持通知'); return }
-    if (Notification.permission === 'denied') { showToast('通知被拒绝，请在浏览器设置中开启'); return }
-    if (Notification.permission === 'default') {
-      const p = await Notification.requestPermission()
-      updateNotifStatus()
-      if (p !== 'granted') { showToast('需要允许通知才能提醒'); return }
-    }
-    const ok = await sendNotification('🔔 测试通知', '如果看到此消息，通知功能正常！', 'test')
-    if (ok) showToast('测试通知已发送')
-    else showToast('通知发送失败，按F12看控制台日志')
+  // 测试弹窗按钮
+  $('#testNotifBtn').addEventListener('click', () => {
+    showReminderModal('🔔 测试弹窗', '弹窗功能正常！\n点击"我知道了"关闭')
   })
 
   // Click on list items (event delegation)
