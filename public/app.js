@@ -36,10 +36,30 @@ const repeatSelect = $('#repeatSelect')
   setDefaultTime()
   await loadReminders()
   setupEventListeners()
+  updateNotifStatus()
   checkDueReminders()            // 立即检查一次
   setInterval(checkDueReminders, 15000)  // 每15秒轮询
   registerSW()
 })()
+
+function updateNotifStatus() {
+  const el = $('#notifStatus')
+  if (!('Notification' in window)) {
+    el.textContent = '此浏览器不支持通知'
+    return
+  }
+  switch (Notification.permission) {
+    case 'granted':
+      el.textContent = '✓ 通知已允许'
+      break
+    case 'denied':
+      el.textContent = '✗ 通知被拒绝，请在浏览器设置中开启'
+      break
+    case 'default':
+      el.textContent = '点击"测试通知"允许通知'
+      break
+  }
+}
 
 function setDefaultTime() {
   const d = new Date()
@@ -163,19 +183,35 @@ function escapeHtml(s) {
 
 // --- Check due reminders (desktop notification) ---
 async function checkDueReminders() {
-  // 桌面通知
-  if ('Notification' in window && Notification.permission === 'granted') {
-    const due = reminders.filter(r =>
-      !r.done && !r.notified && new Date(r.remind_at) <= new Date()
-    )
+  console.log('[提醒] 检查到期提醒...', reminders.length, '条待检')
+
+  // 检查到期提醒
+  const due = reminders.filter(r =>
+    !r.done && !r.notified && new Date(r.remind_at) <= new Date()
+  )
+  console.log('[提醒] 到期条数:', due.length)
+
+  if (due.length > 0 && 'Notification' in window && Notification.permission === 'granted') {
     for (const r of due) {
-      new Notification('⏰ 提醒', { body: r.title, icon: '/icons/icon-192.svg' })
+      console.log('[提醒] 弹出通知:', r.title)
+      try {
+        const notif = new Notification('⏰ 提醒', {
+          body: r.title,
+          icon: '/icons/icon-192.svg',
+          tag: r.id,
+        })
+        // 点击通知跳转到页面
+        notif.onclick = () => window.focus()
+      } catch (e) {
+        console.error('[提醒] 通知失败:', e)
+      }
       const ok = await supabase(`reminders?id=eq.${r.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ notified: true }),
       })
       if (ok.ok) r.notified = true
     }
+    render()
   }
   await handleRepeating()
 }
@@ -250,6 +286,27 @@ function setupEventListeners() {
     closeForm()
   })
 
+  // 测试通知按钮
+  $('#testNotifBtn').addEventListener('click', () => {
+    if ('Notification' in window) {
+      if (Notification.permission === 'granted') {
+        new Notification('🔔 测试通知', { body: '如果看到此消息，通知功能正常！', icon: '/icons/icon-192.svg' })
+        showToast('测试通知已发送')
+      } else if (Notification.permission === 'default') {
+        Notification.requestPermission().then(p => {
+          updateNotifStatus()
+          if (p === 'granted') {
+            new Notification('🔔 测试通知', { body: '通知已开启！', icon: '/icons/icon-192.svg' })
+          }
+        })
+      } else {
+        showToast('通知被拒绝，请在浏览器设置中开启')
+      }
+    } else {
+      showToast('此浏览器不支持通知')
+    }
+  })
+
   // Click on list items (event delegation)
   list.addEventListener('click', e => {
     const card = e.target.closest('.card')
@@ -290,10 +347,18 @@ function closeForm() {
 // --- Service Worker ---
 function registerSW() {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {})
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission()
-    }
+    navigator.serviceWorker.register('/sw.js').then(() => {
+      console.log('[SW] 注册成功')
+    }).catch(e => {
+      console.error('[SW] 注册失败:', e)
+    })
+  }
+  // 请求通知权限
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().then(p => {
+      console.log('[通知] 权限:', p)
+      updateNotifStatus()
+    })
   }
 }
 
